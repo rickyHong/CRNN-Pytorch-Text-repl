@@ -5,7 +5,6 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.utils.data
-from torch.autograd import Variable
 import numpy as np
 from warpctc_pytorch import CTCLoss
 import os
@@ -53,9 +52,8 @@ torch.manual_seed(opt.manualSeed)
 
 cudnn.benchmark = True
 
-if torch.cuda.is_available() and not opt.cuda:
-    print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-
+device = torch.device("cuda:0"
+                      if opt.cuda and torch.cuda.is_available() else "cpu")
 train_dataset = dataset.lmdbDataset(root=opt.trainroot)
 assert train_dataset
 if not opt.random_sample:
@@ -63,10 +61,13 @@ if not opt.random_sample:
 else:
     sampler = None
 train_loader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=opt.batchSize,
-    shuffle=True, sampler=sampler,
+    train_dataset,
+    batch_size=opt.batchSize,
+    shuffle=True,
+    sampler=sampler,
     num_workers=int(opt.workers),
-    collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
+    collate_fn=dataset.alignCollate(
+        imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
 test_dataset = dataset.lmdbDataset(
     root=opt.valroot, transform=dataset.resizeNormalize((100, 32)))
 
@@ -87,26 +88,15 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
+crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh).to(device)
 crnn.apply(weights_init)
 if opt.crnn != '':
     print('loading pretrained model from %s' % opt.crnn)
     crnn.load_state_dict(torch.load(opt.crnn))
 print(crnn)
 
-image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
-text = torch.IntTensor(opt.batchSize * 5)
-length = torch.IntTensor(opt.batchSize)
-
-if opt.cuda:
-    crnn.cuda()
-    crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
-    image = image.cuda()
-    criterion = criterion.cuda()
-
-image = Variable(image)
-text = Variable(text)
-length = Variable(length)
+crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
+criterion = criterion.cuda()
 
 # loss averager
 loss_avg = utils.averager()
@@ -137,18 +127,15 @@ def val(net, dataset, criterion, max_iter=100):
     loss_avg = utils.averager()
 
     max_iter = min(max_iter, len(data_loader))
-    for i in range(max_iter):
-        data = val_iter.next()
+    #  for i in range(max_iter):
+    for i, (images, texts) in enumerate(val_iter):
+        images, texts = images.to(device), texts.to(device)
         i += 1
-        cpu_images, cpu_texts = data
-        batch_size = cpu_images.size(0)
-        utils.loadData(image, cpu_images)
-        t, l = converter.encode(cpu_texts)
-        utils.loadData(text, t)
-        utils.loadData(length, l)
+        batch_size = images.size(0)
+        text, length = converter.encode(texts)
 
-        preds = crnn(image)
-        preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
+        preds = crnn(images)
+        preds_size = torch.IntTensor([preds.size(0)] * batch_size)
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
 
@@ -156,12 +143,13 @@ def val(net, dataset, criterion, max_iter=100):
         preds = preds.squeeze(2)
         preds = preds.transpose(1, 0).contiguous().view(-1)
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
-        for pred, target in zip(sim_preds, cpu_texts):
+        for pred, target in zip(sim_preds, texts):
             if pred == target.lower():
                 n_correct += 1
 
-    raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
-    for raw_pred, pred, gt in zip(raw_preds, sim_preds, cpu_texts):
+    raw_preds = converter.decode(
+        preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
+    for raw_pred, pred, gt in zip(raw_preds, sim_preds, texts):
         print('%-20s => %-20s, gt: %-20s' % (raw_pred, pred, gt))
 
     accuracy = n_correct / float(max_iter * opt.batchSize)
