@@ -1,6 +1,8 @@
 Convolutional Recurrent Neural Network
 ======================================
 
+Training Version : https://github.com/meijieru/crnn.pytorch/archive/952baa5cfe3c870ad1187a2980f99b4922bca693.zip
+
 This software implements the Convolutional Recurrent Neural Network (CRNN) in pytorch.
 Origin software could be found in [crnn](https://github.com/bgshih/crnn)
 
